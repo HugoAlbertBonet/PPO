@@ -29,6 +29,7 @@ class PPO():
         self.timesteps_per_batch = 4800
         self.max_timesteps_per_episode = 1600
         self.gamma = 0.95
+        self.n_updates_per_iteration = 5
 
     def get_action(self, obs):
         # Query the actor network for a mean action.
@@ -105,6 +106,18 @@ class PPO():
         batch_rtgs = self.compute_rtgs(batch_rews)
         # Return the batch data
         return batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens
+    
+    def evaluate(self, batch_obs, batch_acts):
+        # Query critic network for a value V for each obs in batch_obs.
+        V = self.critic(batch_obs).squeeze()
+        # Calculate the log probabilities of batch actions using most 
+        # recent actor network.
+        # This segment of code is similar to that in get_action()
+        mean = self.actor(batch_obs)
+        dist = MultivariateNormal(mean, self.cov_mat)
+        log_probs = dist.log_prob(batch_acts)
+        # Return predicted values V and log probs log_probs
+        return V, log_probs
 
     def learn(self, total_timesteps):
         t_so_far = 0 # Timesteps simulated so far
@@ -113,4 +126,21 @@ class PPO():
         while t_so_far < total_timesteps:
             # ALG STEP 3
             batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens = self.rollout()
+
+            # Calculate V_{phi, k}
+            V, _ = self.evaluate(batch_obs, batch_acts)
+            # ALG STEP 5
+            # Calculate advantage
+            A_k = batch_rtgs - V.detach()
+            # Normalize advantages
+            A_k = (A_k - A_k.mean()) / (A_k.std() + 1e-10)
+
+            for _ in range(self.n_updates_per_iteration):
+                # Calculate pi_theta(a_t | s_t)
+                _, curr_log_probs = self.evaluate(batch_obs, batch_acts)
+                # Calculate ratios
+                # Little calculus trick: As we have the logs of the probs and 
+                # we need to divide both probs, we can first substract the logs and then 
+                # exponentiate to get the ratio of the probs, thus performing just one exponential
+                ratios = torch.exp(curr_log_probs - batch_log_probs)
 
