@@ -1,6 +1,10 @@
 from network import FeedForwardNN
 import torch 
 from torch.distributions import MultivariateNormal
+from torch.optim import Adam
+from torch import nn
+import numpy as np
+from tqdm import tqdm
 
 
 class PPO():
@@ -24,12 +28,17 @@ class PPO():
         # Create the covariance matrix
         self.cov_mat = torch.diag(self.cov_var)
 
+        self.actor_optim = Adam(self.actor.parameters(), lr=self.lr)
+        self.critic_optim = Adam(self.critic.parameters(), lr=self.lr)
+
     def _init_hyperparameters(self):
         # Default values for hyperparameters, will need to change later.
         self.timesteps_per_batch = 4800
         self.max_timesteps_per_episode = 1600
         self.gamma = 0.95
         self.n_updates_per_iteration = 5
+        self.clip = 0.2 # As recommended by the paper
+        self.lr = 0.005
 
     def get_action(self, obs):
         # Query the actor network for a mean action.
@@ -78,7 +87,7 @@ class PPO():
         while t < self.timesteps_per_batch:
             # Rewards this episode
             ep_rews = []
-            obs = self.env.reset()
+            obs, _ = self.env.reset()
             done = False
             for ep_t in range(self.max_timesteps_per_episode):
                 # Increment timesteps ran this batch so far
@@ -86,7 +95,8 @@ class PPO():
                 # Collect observation
                 batch_obs.append(obs)
                 action, log_prob = self.get_action(obs)
-                obs, rew, done, _ = self.env.step(action)
+                obs, rew, terminated, truncated, _ = self.env.step(action)
+                done = terminated or truncated
             
                 # Collect reward, action, and log prob
                 ep_rews.append(rew)
@@ -126,6 +136,8 @@ class PPO():
         while t_so_far < total_timesteps:
             # ALG STEP 3
             batch_obs, batch_acts, batch_log_probs, batch_rtgs, batch_lens = self.rollout()
+            t_so_far += np.sum(batch_lens)
+            print(f"{t_so_far} steps out of {total_timesteps}")
 
             # Calculate V_{phi, k}
             V, _ = self.evaluate(batch_obs, batch_acts)
@@ -135,12 +147,37 @@ class PPO():
             # Normalize advantages
             A_k = (A_k - A_k.mean()) / (A_k.std() + 1e-10)
 
-            for _ in range(self.n_updates_per_iteration):
+            for _ in tqdm(range(self.n_updates_per_iteration)):
                 # Calculate pi_theta(a_t | s_t)
-                _, curr_log_probs = self.evaluate(batch_obs, batch_acts)
+                V, curr_log_probs = self.evaluate(batch_obs, batch_acts)
                 # Calculate ratios
                 # Little calculus trick: As we have the logs of the probs and 
                 # we need to divide both probs, we can first substract the logs and then 
                 # exponentiate to get the ratio of the probs, thus performing just one exponential
                 ratios = torch.exp(curr_log_probs - batch_log_probs)
 
+                # Calculate surrogate losses
+                surr1 = ratios * A_k
+                surr2 = torch.clamp(ratios, 1 - self.clip, 1 + self.clip) * A_k
+
+                actor_loss = (-torch.min(surr1, surr2)).mean()
+
+                # Calculate gradients and perform backward propagation for actor network
+                self.actor_optim.zero_grad()
+                actor_loss.backward(retain_graph = True)
+                self.actor_optim.step()
+
+                critic_loss = nn.MSELoss()(V, batch_rtgs)
+                # Calculate gradients and perform backward propagation for critic network    
+                self.critic_optim.zero_grad()    
+                critic_loss.backward()    
+                self.critic_optim.step()
+            
+
+
+
+if __name__ == "__main__":
+    import gym
+    env = gym.make('Pendulum-v1')
+    model = PPO(env)
+    model.learn(10000)
