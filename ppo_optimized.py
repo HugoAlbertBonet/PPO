@@ -311,6 +311,7 @@ class PPO:
         """
         # Query the actor network for a mean action
         obs = torch.tensor(obs,dtype=torch.float)
+        #print(obs)
         mean = self.actor(obs)
 
         # Create a distribution with the mean action and std from the covariance matrix above.

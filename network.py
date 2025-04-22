@@ -20,4 +20,4 @@ class FeedForwardNN(nn.Module):
         activation1 = F.relu(self.layer1(obs))
         activation2 = F.relu(self.layer2(activation1))
         output = self.layer3(activation2)
-        return output
+        return torch.tanh(output)
